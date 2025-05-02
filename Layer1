@@ -1,0 +1,137 @@
+name:  deploy_API_CICD
+ 
+#on: [push]
+on: 
+ push:
+   branches:
+     - chathpe-api-prod     
+jobs:
+docker_build_push_acr:
+   name: 'Docker Build and Push to ACR'
+   runs-on: label-semanticlayer1 # self-hosted-runner-semanticlayer # self-hosted runner name
+   outputs:
+     version: ${{ steps.read_version.outputs.version }}
+     environment: ${{ steps.read_version.outputs.environment }}
+   defaults:
+     run:
+       shell: bash
+   steps:
+   # Checkout the  repository to the GitHub Actions runner
+   - name: Checkout
+     uses: actions/checkout@v3 
+     with:
+       token: ${{ secrets.GITHUB_TOKEN }}
+   - name: Azure Login
+     uses: Azure/login@v1
+     with:
+       creds: ${{ secrets.AZURE_CREDENTIALS1 }}
+      allow-no-subscriptions: true
+       auth-type: SERVICE_PRINCIPAL
+       environment: azurecloud
+   - name: List Azure Resources
+     run:  |
+       az account show
+      
+   - name: Read version.txt file
+     id: read_version
+     run: |
+       version=$(grep '^version=' version.txt | cut -d '=' -f 2)
+      environment=$(grep '^environment=' version.txt | cut -d '=' -f 2)
+       # Remove leading spaces if there are any
+       version=$(echo $version | xargs)
+      environment=$(echo $environment | xargs)
+       # Extracting the version and patch number
+      major_minor_patch=$(echo $version | cut -d '.' -f 1,2,3)
+      major_minor=$(echo $major_minor_patch | cut -d '.' -f 1,2)
+       patch=$(echo $major_minor_patch | cut -d '.' -f 3)
+       # Ensure patch is treated as a number (remove leading zeros)
+      patch=$((10#$patch))  # This forces Bash to interpret it as decimal
+       # Increment patch version
+      new_patch=$((patch + 1))
+      new_patch_formatted=$(printf "%03d" $new_patch)  # Format as 3 digits (e.g., 010, 011)
+      new_version="$major_minor.$new_patch_formatted" 
+       echo "Version: $new_version"
+       echo "Environment: $environment"       
+       # Set the outputs to be used in other steps
+       echo "::set-output name=version::$new_version"
+       echo "::set-output name=environment::$environment"
+       echo "VERSION=$new_version" >> $GITHUB_ENV
+       echo "ENVIRONMENT=$environment" >> $GITHUB_ENV
+       # Output the new version
+       echo "Updated version in version.txt to $new_version"
+       # Display Docker Image Tag Before Build
+   - name: Display Docker Image Tag Before Build
+     run: |
+        image_tag="crchathpeprodwestus3001.azurecr.io/chathpe-semantic-layer-cicd:${{ steps.read_version.outputs.environment }}-v${{ steps.read_version.outputs.version }}"
+         echo "Docker Image Tag Before Build: $image_tag"
+        
+## prod env
+   - name: 'Docker Login'
+     uses: azure/docker-login@v1
+     with:
+       login-server: ${{ secrets.REGISTRY_LOGIN_SERVER3 }}
+       username: ${{ secrets.REGISTRY_USERNAME3 }}
+       password: ${{ secrets.REGISTRY_PASSWORD3 }}
+ 
+ 
+   - name: Building the image 
+    working-directory: ./chathpe_semantic_layer
+     run:  |
+        image_tag="crchathpeprodwestus3001.azurecr.io/chathpe-semantic-layer-cicd:${{ steps.read_version.outputs.environment }}-v${{ steps.read_version.outputs.version }}"
+         echo "Building Docker image with tag: $image_tag"
+         docker build . -t $image_tag
+         docker push $image_tag
+     # Display Docker Image  Tag After Build
+   - name: Display Docker Image Tag After Build
+     run: |
+      image_tag="crchathpeprodwestus3001.azurecr.io/chathpe-semantic-layer-cicd:${{ steps.read_version.outputs.environment }}-v${{ steps.read_version.outputs.version }}"
+       echo "Docker Image Tag After Build: $image_tag"
+   - name: Set up Trivy
+     uses: aquasecurity/trivy-action@0.24.0
+     with:
+       severity: 'CRITICAL,HIGH'
+       format: 'table'
+      ignore-unfixed: true
+       vuln-type: 'os,library'
+       image-ref: crchathpeprodwestus3001.azurecr.io/chathpe-semantic-layer-cicd:${{ steps.read_version.outputs.environment }}-v${{ steps.read_version.outputs.version }}
+       quiet: true
+    continue-on-error: true
+ 
+deploy_container_apps:
+   name: 'Deploy Container App to Azure Container Apps'
+   runs-on: label-semanticlayer1 # self-hosted-runner-semanticlayer # self-hosted runner name
+   needs: docker_build_push_acr
+   environment: ${{ needs.docker_build_push_acr.outputs.environment }}
+ 
+   steps:
+   - name: Azure Login
+     uses: azure/login@v1
+     with:
+       creds: ${{ secrets.AZURE_CREDENTIALS1 }}
+ ## prod env     
+   - name: 'Docker Login'
+     uses: azure/docker-login@v1
+     with:
+       login-server: ${{ secrets.REGISTRY_LOGIN_SERVER3 }}
+       username: ${{ secrets.REGISTRY_USERNAME3 }}
+       password: ${{ secrets.REGISTRY_PASSWORD3 }}
+ 
+   - name: Get last pushed image reference
+     run: |
+        last_pushed_image=$(az acr repository show-tags --name crchathpeprodwestus3001.azurecr.io --repository chathpe-semantic-layer-cicd --orderby time_desc --top 1 --query '[0]' -o tsv)
+         echo "LAST_PUSHED_IMAGE=$last_pushed_image" >> $GITHUB_ENV
+         echo "LAST_PUSHED_IMAGE=$last_pushed_image"
+   - name: Deploy To Container Apps
+     uses: azure/container-apps-deploy-action@v1
+     with:
+      containerAppName: ca-chathpe-prod-api-westus3-001 
+      resourceGroup: rg-chathpe-network-prod-westus3-001 
+       imageToDeploy: crchathpeprodwestus3001.azurecr.io/chathpe-semantic-layer-cicd:${{ env.LAST_PUSHED_IMAGE }}
+ 
+   - name: Remove Local Docker Image
+     if: success()
+     run: |
+         docker images
+         docker rmi crchathpeprodwestus3001.azurecr.io/chathpe-semantic-layer-cicd:${{ env.LAST_PUSHED_IMAGE }} || echo "Image not found or already removed"
+         docker images
+         docker image prune -f || echo "No dangling images to remove" 
