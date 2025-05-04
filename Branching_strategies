@@ -1,1 +1,15 @@
-Main Branches Overview
+Branching Strategy
+
+1. Organizes the workflow
+2. Prevents code conflicts
+3. Supports team collaboration
+4. Supports CI/CD pipelines
+
+
+Different branching strategies in Git,
+1. Main Only (Single Branch)
+2. Feature Branching
+3. Git Flow
+4. GitHub Flow
+5. Trunk-Based Development
+6. Release Branching
